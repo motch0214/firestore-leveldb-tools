@@ -2,6 +2,8 @@ import os
 import io
 import json
 import sys
+import calendar, datetime
+import codecs
 
 # command-line arguments
 backupFolder = os.path.normpath(sys.argv[1])
@@ -16,15 +18,20 @@ from google.appengine.api.files import records
 from google.appengine.datastore import entity_pb
 from google.appengine.api import datastore
 
+from google.appengine.api import datastore_types
+
 def GetCollectionInJSONTreeForProtoEntity(jsonTree, entity_proto):
   result = jsonTree
-  for element in entity_proto.key().path().element_list():
-    nextKey = None
-    if element.has_type(): nextKey = element.type()
-    elif element.has_name(): nextKey = element.name()
-    #elif element.has_id(): nextKey = element.id()
-
-    if nextKey is not None:
+  elements = entity_proto.key().path().element_list()
+  for i, element in enumerate(elements):
+    if element.has_type():
+      nextKey = element.type()
+      if nextKey not in result:
+        result[nextKey] = {}
+      result = result[nextKey]
+    
+    if element.has_name() and i + 1 < len(elements):
+      nextKey = element.name()
       if nextKey not in result:
         result[nextKey] = {}
       result = result[nextKey]
@@ -43,9 +50,37 @@ def GetKeyOfProtoEntity(entity_proto):
 def GetValueOfProtoEntity(entity_proto):
   return datastore.Entity.FromPb(entity_proto)
 
+def GetMapOfProtoEntity(embedded):
+  v = entity_pb.EntityProto()
+  v.ParsePartialFromString(embedded)
+  return v
+
+def ParseEntityData(data, depth=0):
+  if isinstance(data, datastore.Entity):
+    m = {}
+    for k, v in data.items():
+      m[k] = ParseEntityData(v, depth+1)
+    return m
+  elif isinstance(data, datastore_types.EmbeddedEntity):
+    e = entity_pb.EntityProto()
+    e.ParsePartialFromString(data)
+    m = {}
+    for p in e.property_list() + e.raw_property_list():
+      if p.multiple():
+        if p.name() not in m:
+          m[p.name()] = []
+        l = m[p.name()]
+        l.append(ParseEntityData(datastore_types.FromPropertyPb(p), depth+1))
+      else:
+        m[p.name()] = ParseEntityData(datastore_types.FromPropertyPb(p), depth+1)
+    return m
+  elif isinstance(data, list):
+    return map(lambda d: ParseEntityData(d, depth+1), data)
+  else:
+    return data
+
 def Start():
   jsonTree = {}
-  items = []
 
   for filename in os.listdir(backupFolder):
     if not filename.startswith("output-"): continue
@@ -57,25 +92,19 @@ def Start():
     for recordIndex, record in enumerate(reader):
       entity_proto = entity_pb.EntityProto(contents=record)
 
-      #collection = GetCollectionOfProtoEntity(entity_proto)
       collectionInJSONTree = GetCollectionInJSONTreeForProtoEntity(jsonTree, entity_proto)
       key = GetKeyOfProtoEntity(entity_proto)
-      entity = GetValueOfProtoEntity(entity_proto)
 
-      collectionInJSONTree[key] = entity
-      items.append(entity) # also add to flat list, so we know the total item count
+      result = ParseEntityData(datastore.Entity.FromPb(entity_proto))
+      collectionInJSONTree[key] = result
 
-      print("Parsing document #" + str(len(items)))
-      
   outPath = os.path.join(backupFolder, 'Data.json')
-  out = open(outPath, 'w')
-  out.write(json.dumps(jsonTree, default=JsonSerializeFunc, encoding='latin-1', indent=2))
-  out.close()
+  with open(outPath, 'w') as out:
+      out.write(json.dumps(jsonTree, default=JsonSerializeFunc, ensure_ascii=False, indent=2).encode('utf-8'))
   print("JSON file written to: " + outPath)
 
-def JsonSerializeFunc(obj):
-  import calendar, datetime
 
+def JsonSerializeFunc(obj):
   if isinstance(obj, datetime.datetime):
     if obj.utcoffset() is not None:
       obj = obj - obj.utcoffset()
@@ -85,6 +114,6 @@ def JsonSerializeFunc(obj):
     )
     return millis
   #raise TypeError('Not sure how to serialize %s' % (obj,))
-  return str(obj)
+  return obj
 
 Start()
