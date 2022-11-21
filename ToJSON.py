@@ -55,10 +55,11 @@ def parse_entity_data(data, depth=0):
 
 def process(output_folder):
   result = {}
+  count = 0
 
   for filename in os.listdir(output_folder):
     if not filename.startswith("output-"): continue
-    print("Reading from:" + filename)
+    print("Reading from: " + filename)
     
     with open(os.path.join(output_folder, filename), "rb") as f:
       reader = records.RecordsReader(f)
@@ -70,8 +71,13 @@ def process(output_folder):
 
         # === Process ===
         
-        print(path)
+        if len(path) == 4 and path[0] == "projects" and path[2] == "site-meta":
+          routes = [route["id"] for route in data["routes"].values() if route["status"] == "PUBLISHED"]
+          result[path[1]] = routes
 
+          count = count + len(routes)
+
+  print("count = {}".format(count))
 
   result_path = os.path.join(output_folder, 'result.json')
   with open(result_path, 'w') as out:
