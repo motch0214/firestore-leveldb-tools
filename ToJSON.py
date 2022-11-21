@@ -1,14 +1,8 @@
 import os
-import io
 import json
 import sys
-import calendar, datetime
-import codecs
 
-# command-line arguments
-backupFolder = os.path.normpath(sys.argv[1])
 
-#repoRoot = os.getcwd()
 repoRoot = os.path.dirname(os.path.realpath(__file__))
 
 # import google sdks
@@ -20,46 +14,25 @@ from google.appengine.api import datastore
 
 from google.appengine.api import datastore_types
 
-def GetCollectionInJSONTreeForProtoEntity(jsonTree, entity_proto):
-  result = jsonTree
+
+def resolve_entity_path(entity_proto):
+  path = []
+
   elements = entity_proto.key().path().element_list()
-  for i, element in enumerate(elements):
+  for element in elements:
     if element.has_type():
-      nextKey = element.type()
-      if nextKey not in result:
-        result[nextKey] = {}
-      result = result[nextKey]
-    
-    if element.has_name() and i + 1 < len(elements):
-      nextKey = element.name()
-      if nextKey not in result:
-        result[nextKey] = {}
-      result = result[nextKey]
-  return result
-'''
-def GetCollectionOfProtoEntity(entity_proto):
-  # reverse path-elements, so we always get last collection
-  for element in entity_proto.key().path().element_list():
-    if element.has_type(): return element.type()
-'''
-def GetKeyOfProtoEntity(entity_proto):
-  # reverse path-elements, so we always get last key
-  for element in reversed(entity_proto.key().path().element_list()):
-    if element.has_name(): return element.name()
-    #if element.has_id(): return element.id()
-def GetValueOfProtoEntity(entity_proto):
-  return datastore.Entity.FromPb(entity_proto)
+      path.append(element.type())
+    if element.has_name():
+      path.append(element.name())
+  
+  return path
 
-def GetMapOfProtoEntity(embedded):
-  v = entity_pb.EntityProto()
-  v.ParsePartialFromString(embedded)
-  return v
 
-def ParseEntityData(data, depth=0):
+def parse_entity_data(data, depth=0):
   if isinstance(data, datastore.Entity):
     m = {}
     for k, v in data.items():
-      m[k] = ParseEntityData(v, depth+1)
+      m[k] = parse_entity_data(v, depth+1)
     return m
   elif isinstance(data, datastore_types.EmbeddedEntity):
     e = entity_pb.EntityProto()
@@ -70,50 +43,48 @@ def ParseEntityData(data, depth=0):
         if p.name() not in m:
           m[p.name()] = []
         l = m[p.name()]
-        l.append(ParseEntityData(datastore_types.FromPropertyPb(p), depth+1))
+        l.append(parse_entity_data(datastore_types.FromPropertyPb(p), depth+1))
       else:
-        m[p.name()] = ParseEntityData(datastore_types.FromPropertyPb(p), depth+1)
+        m[p.name()] = parse_entity_data(datastore_types.FromPropertyPb(p), depth+1)
     return m
   elif isinstance(data, list):
-    return map(lambda d: ParseEntityData(d, depth+1), data)
+    return map(lambda d: parse_entity_data(d, depth+1), data)
   else:
     return data
 
-def Start():
-  jsonTree = {}
 
-  for filename in os.listdir(backupFolder):
+def process(output_folder):
+  result = {}
+
+  for filename in os.listdir(output_folder):
     if not filename.startswith("output-"): continue
     print("Reading from:" + filename)
     
-    inPath = os.path.join(backupFolder, filename)
-    raw = open(inPath, 'rb')
-    reader = records.RecordsReader(raw)
-    for recordIndex, record in enumerate(reader):
-      entity_proto = entity_pb.EntityProto(contents=record)
+    with open(os.path.join(output_folder, filename), "rb") as f:
+      reader = records.RecordsReader(f)
+      for record in reader:
+        entity_proto = entity_pb.EntityProto(contents=record)
 
-      collectionInJSONTree = GetCollectionInJSONTreeForProtoEntity(jsonTree, entity_proto)
-      key = GetKeyOfProtoEntity(entity_proto)
+        path = resolve_entity_path(entity_proto)
+        data = parse_entity_data(datastore.Entity.FromPb(entity_proto))
 
-      result = ParseEntityData(datastore.Entity.FromPb(entity_proto))
-      collectionInJSONTree[key] = result
-
-  outPath = os.path.join(backupFolder, 'Data.json')
-  with open(outPath, 'w') as out:
-      out.write(json.dumps(jsonTree, default=JsonSerializeFunc, ensure_ascii=False, indent=2).encode('utf-8'))
-  print("JSON file written to: " + outPath)
+        # === Process ===
+        
+        print(path)
 
 
-def JsonSerializeFunc(obj):
-  if isinstance(obj, datetime.datetime):
-    if obj.utcoffset() is not None:
-      obj = obj - obj.utcoffset()
-    millis = int(
-      calendar.timegm(obj.timetuple()) * 1000 +
-      obj.microsecond / 1000
-    )
-    return millis
-  #raise TypeError('Not sure how to serialize %s' % (obj,))
-  return obj
+  result_path = os.path.join(output_folder, 'result.json')
+  with open(result_path, 'w') as out:
+      out.write(json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8'))
+  print("Result written to: " + result_path)
 
-Start()
+
+def main():
+  # command-line arguments
+  output_folder = os.path.normpath(sys.argv[1])
+
+  process(output_folder)
+
+
+if __name__ == "__main__":
+  main()
